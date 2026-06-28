@@ -111,11 +111,11 @@ function detectSubcategorySlug(name) {
 
 function buildPricing(price) {
   return [
-    `Закупка у фермеров: ${Math.round(price * 0.33)} ₽`,
-    `Логистика и доставка: ${Math.round(price * 0.25)} ₽`,
-    `Бережная упаковка: ${Math.round(price * 0.12)} ₽`,
-    `Отбор и контроль качества: ${Math.round(price * 0.15)} ₽`,
-    `Работа сервиса: ${Math.round(price * 0.15)} ₽`,
+    { pct: 33, label: 'Фермерам',          sub: 'закупка напрямую у производителей', color: '#2A7A2A', amount: Math.round(price * 0.33) },
+    { pct: 25, label: 'Логистика',          sub: 'доставка и хранение',               color: '#E0A458', amount: Math.round(price * 0.25) },
+    { pct: 12, label: 'Упаковка',           sub: 'бережная упаковка без пластика',    color: '#8B6F47', amount: Math.round(price * 0.12) },
+    { pct: 15, label: 'Контроль качества',  sub: 'отбор и проверка свежести',         color: '#6B92B8', amount: Math.round(price * 0.15) },
+    { pct: 15, label: 'Сервис',             sub: 'работа платформы и эквайринг',      color: '#C4782A', amount: Math.round(price * 0.15) },
   ];
 }
 
@@ -162,8 +162,8 @@ function buildProductBody({ name, price, category, weight, description, ingredie
     bg:           CATEGORY_BG[cat]    || 'linear-gradient(135deg, #F4F7F2, #fff)',
     badge:        badge_type ? { type: badge_type, label: BADGE_LABELS[badge_type] || badge_type } : null,
     composition:  [
-      ...(description  ? [description]  : []),
-      ...(ingredients && ingredients !== name ? [ingredients] : []),
+      ...(description  ? [[description, '']]  : []),
+      ...(ingredients && ingredients !== name ? [[ingredients, '']] : []),
     ],
     suppliers:    [],
     pricing:      buildPricing(price),
