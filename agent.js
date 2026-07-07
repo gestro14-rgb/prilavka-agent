@@ -6,6 +6,17 @@ const BOT_TOKEN       = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_API_URL   = process.env.ADMIN_API_URL;
 const ADMIN_JWT_TOKEN = process.env.ADMIN_JWT_TOKEN;
 const ALLOWED_USER_ID = 686803005;
+const MINI_APP_URL    = process.env.MINI_APP_URL || 'https://prilavka-app-production.up.railway.app';
+
+const START_MESSAGE = `Привет! 👋 Я Михаил, делаю доставку свежих овощей и фруктов на юго-запад Москвы.
+
+Работаю со своими проверенными поставщиками, лично отбираю лучшее, привожу вечером с 18:00 до 21:00.
+
+💳 Оплата при получении — никакой предоплаты
+🌿 Показываю честно, куда уходит каждый рубль
+📍 Работаю по вашему району
+
+Жмите кнопку ниже, чтобы посмотреть каталог 👇`;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -352,6 +363,22 @@ async function downloadPhotoAsBase64(fileId) {
 async function handleUpdate(update) {
   const msg = update.message;
   if (!msg) return;
+
+  // /start (в том числе с реферальным диплинком "/start ref_XXXXX") — приветствие
+  // с кнопкой Mini App для ЛЮБОГО пользователя, до фильтра по админу.
+  if (msg.text === '/start' || msg.text?.startsWith('/start ')) {
+    await tgRequest('sendMessage', {
+      chat_id: msg.chat.id,
+      text: START_MESSAGE,
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '🛒 Открыть Прилавку', web_app: { url: MINI_APP_URL } },
+        ]],
+      },
+    });
+    return;
+  }
+
   if (msg.from?.id !== ALLOWED_USER_ID) return;
 
   const chatId       = msg.chat.id;
