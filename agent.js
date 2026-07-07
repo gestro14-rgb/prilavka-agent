@@ -364,18 +364,27 @@ async function handleUpdate(update) {
   const msg = update.message;
   if (!msg) return;
 
+  // TEMP DEBUG — убрать после диагностики /start
+  console.log('[UPDATE] от', msg.from?.id, 'text:', JSON.stringify(msg.text));
+
   // /start (в том числе с реферальным диплинком "/start ref_XXXXX") — приветствие
   // с кнопкой Mini App для ЛЮБОГО пользователя, до фильтра по админу.
   if (msg.text === '/start' || msg.text?.startsWith('/start ')) {
-    await tgRequest('sendMessage', {
-      chat_id: msg.chat.id,
-      text: START_MESSAGE,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '🛒 Открыть Прилавку', web_app: { url: MINI_APP_URL } },
-        ]],
-      },
-    });
+    console.log('[START] Получена команда /start от', msg.from?.id); // TEMP DEBUG
+    try {
+      const result = await tgRequest('sendMessage', {
+        chat_id: msg.chat.id,
+        text: START_MESSAGE,
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '🛒 Открыть Прилавку', web_app: { url: MINI_APP_URL } },
+          ]],
+        },
+      });
+      console.log('[START] Результат отправки:', JSON.stringify(result)); // TEMP DEBUG
+    } catch (e) {
+      console.error('[START] Исключение при отправке:', e); // TEMP DEBUG
+    }
     return;
   }
 
