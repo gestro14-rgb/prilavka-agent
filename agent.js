@@ -190,15 +190,45 @@ function buildProductBody({ name, price, category, weight, description, ingredie
 const pendingChanges = new Map();
 
 const FIELD_LABELS = {
-  title:     'Название',
-  price:     'Цена',
-  weight:    'Вес/объём',
-  category:  'Категория',
-  sortOrder: 'Порядок сортировки',
-  isActive:  'Показывать в приложении',
-  inStock:   'В наличии',
-  badge:     'Метка',
+  title:         'Название',
+  price:         'Цена',
+  weight:        'Вес/объём',
+  category:      'Категория',
+  sortOrder:     'Порядок сортировки',
+  isActive:      'Показывать в приложении',
+  inStock:       'В наличии',
+  isBundle:      'Набор с кастомизируемым составом',
+  badge:         'Метка',
+  emoji:         'Эмодзи',
+  bg:            'Фон карточки',
+  imageUrl:      'Фото товара',
+  homeImageUrl:  'Фото для Главной',
+  subcategoryId: 'Подкатегория',
+  composition:   'Состав',
+  suppliers:     'Поставщики',
+  pricing:       'Разбивка цены',
+  nutrition:     'Пищевая ценность',
 };
+
+function formatComposition(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return '—';
+  return arr.map(([name, amount]) => (amount ? `${name}: ${amount}` : name)).join(', ');
+}
+
+function formatSuppliers(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return '—';
+  return arr.map(s => (s.region ? `${s.name} (${s.region})` : s.name)).join(', ');
+}
+
+function formatPricing(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return '—';
+  return arr.map(p => `${p.label} ${p.pct}%`).join(', ');
+}
+
+function formatNutrition(n) {
+  if (!n) return '—';
+  return `К:${n.calories ?? '—'} Б:${n.protein ?? '—'} Ж:${n.fat ?? '—'} У:${n.carbs ?? '—'}`;
+}
 
 function formatValue(field, value) {
   if (field === 'badge') {
@@ -206,7 +236,11 @@ function formatValue(field, value) {
     const label = BADGE_LABELS[value.type] || value.type;
     return value.label && value.label !== label ? `${label} ("${value.label}")` : label;
   }
-  if (field === 'isActive' || field === 'inStock') return value ? 'да' : 'нет';
+  if (field === 'composition') return formatComposition(value);
+  if (field === 'suppliers')   return formatSuppliers(value);
+  if (field === 'pricing')     return formatPricing(value);
+  if (field === 'nutrition')   return formatNutrition(value);
+  if (field === 'isActive' || field === 'inStock' || field === 'isBundle') return value ? 'да' : 'нет';
   if (value === null || value === undefined || value === '') return '—';
   return String(value);
 }
@@ -215,7 +249,13 @@ function formatValue(field, value) {
 // и строит {payload, diff}: payload — только реально изменившиеся поля (для PUT,
 // который сам умеет частичные обновления), diff — человекочитаемый список
 // "было → стало" для показа пользователю перед подтверждением.
-function buildProductUpdate(input, cur) {
+//
+// extra.subcategoryResolution — уже отрезолвленная подкатегория (по имени, с
+// проверкой принадлежности итоговой категории) или явный сброс, готовится
+// вызывающим кодом (executeTool), т.к. требует сетевого похода за списком
+// подкатегорий. undefined = подкатегорию не меняем.
+// extra.subcategoriesById — id → name, только для отображения старого значения в diff.
+function buildProductUpdate(input, cur, extra = {}) {
   const payload = {};
   const diff = [];
 
@@ -232,7 +272,21 @@ function buildProductUpdate(input, cur) {
   setField('sortOrder', input.sort_order);
   setField('isActive', input.is_active);
   setField('inStock', input.in_stock);
+  setField('isBundle', input.is_bundle);
+  setField('emoji', input.emoji);
+  setField('bg', input.bg);
 
+  // image_url / home_image_url: нужен реальный http(s)-адрес, ничего не
+  // выдумываем. Пустая строка — явная очистка (бэкенд сам превращает '' в null).
+  for (const [inputKey, dtoKey] of [['image_url', 'imageUrl'], ['home_image_url', 'homeImageUrl']]) {
+    if (input[inputKey] === undefined) continue;
+    const val = String(input[inputKey]).trim();
+    if (val && !/^https?:\/\//i.test(val)) continue; // не похоже на ссылку — молча игнорируем поле
+    setField(dtoKey, val);
+  }
+
+  // Бейдж — трёхзначная логика: undefined = не трогать, badge_type
+  // '' / 'none' = явно очистить, иначе — установить.
   if (input.badge_type !== undefined) {
     const newBadge = !input.badge_type || input.badge_type === 'none'
       ? null
@@ -240,6 +294,72 @@ function buildProductUpdate(input, cur) {
     if (JSON.stringify(newBadge) !== JSON.stringify(cur.badge || null)) {
       payload.badge = newBadge;
       diff.push({ field: 'badge', label: 'Метка', from: formatValue('badge', cur.badge), to: formatValue('badge', newBadge) });
+    }
+  }
+
+  // Подкатегория — id уже отрезолвлен вызывающим кодом, здесь только
+  // сравниваем и строим diff по человекочитаемым именам.
+  if (extra.subcategoryResolution !== undefined) {
+    const newId = extra.subcategoryResolution.id;
+    if (newId !== (cur.subcategoryId ?? null)) {
+      payload.subcategoryId = newId;
+      const oldName = cur.subcategoryId != null ? (extra.subcategoriesById?.[cur.subcategoryId] || cur.subcategoryId) : 'нет';
+      const newName = newId != null ? (extra.subcategoryResolution.name || newId) : 'нет';
+      diff.push({ field: 'subcategoryId', label: FIELD_LABELS.subcategoryId, from: oldName, to: newName });
+    }
+  }
+
+  // Состав: либо полная замена (composition), либо правка только первой
+  // строки — она же "описание" (description) в терминах create_product,
+  // отдельной колонки для описания в БД нет. Не использовать оба сразу —
+  // если передан composition, description игнорируется.
+  if (input.composition !== undefined) {
+    const newComposition = input.composition.map(item => [item.name || '', item.amount || '']);
+    if (JSON.stringify(newComposition) !== JSON.stringify(cur.composition || [])) {
+      payload.composition = newComposition;
+      diff.push({ field: 'composition', label: FIELD_LABELS.composition, from: formatComposition(cur.composition), to: formatComposition(newComposition) });
+    }
+  } else if (input.description !== undefined) {
+    const rest        = (cur.composition || []).slice(1);
+    const firstAmount  = cur.composition?.[0]?.[1] || '';
+    const newComposition = [[input.description, firstAmount], ...rest];
+    if (JSON.stringify(newComposition) !== JSON.stringify(cur.composition || [])) {
+      payload.composition = newComposition;
+      diff.push({ field: 'composition', label: 'Описание (первая строка состава)', from: formatComposition(cur.composition), to: formatComposition(newComposition) });
+    }
+  }
+
+  // Поставщики — полная замена массива. imageUrl намеренно не выдумываем —
+  // либо переносим существующий (модель видит его через get_products), либо
+  // оставляем пустым.
+  if (input.suppliers !== undefined) {
+    const newSuppliers = input.suppliers.map(s => ({
+      emoji: s.emoji || '', name: s.name || '', region: s.region || '', note: s.note || '', imageUrl: s.imageUrl || '',
+    }));
+    if (JSON.stringify(newSuppliers) !== JSON.stringify(cur.suppliers || [])) {
+      payload.suppliers = newSuppliers;
+      diff.push({ field: 'suppliers', label: FIELD_LABELS.suppliers, from: formatSuppliers(cur.suppliers), to: formatSuppliers(newSuppliers) });
+    }
+  }
+
+  // Разбивка цены — полная замена массива, не пересчитывается автоматически
+  // при смене price (так же ведёт себя и админка).
+  if (input.pricing !== undefined) {
+    const newPricing = input.pricing.map(p => ({
+      label: p.label || '', sub: p.sub || '', pct: p.pct ?? 0, amount: p.amount ?? 0, color: p.color || '',
+    }));
+    if (JSON.stringify(newPricing) !== JSON.stringify(cur.pricing || [])) {
+      payload.pricing = newPricing;
+      diff.push({ field: 'pricing', label: FIELD_LABELS.pricing, from: formatPricing(cur.pricing), to: formatPricing(newPricing) });
+    }
+  }
+
+  // Пищевая ценность — задаётся целиком (все 4 поля разом), очистка через
+  // этот инструмент не поддерживается (редкий случай, делается в админке).
+  if (input.nutrition !== undefined) {
+    if (JSON.stringify(input.nutrition) !== JSON.stringify(cur.nutrition || null)) {
+      payload.nutrition = input.nutrition;
+      diff.push({ field: 'nutrition', label: FIELD_LABELS.nutrition, from: formatNutrition(cur.nutrition), to: formatNutrition(input.nutrition) });
     }
   }
 
@@ -282,26 +402,92 @@ const tools = [
   {
     name: 'propose_product_update',
     description:
-      'Подготовить изменение СУЩЕСТВУЮЩЕГО товара (не создание нового). Находит товар по названию или id, ' +
-      'сравнивает с переданными полями и сохраняет черновик изменений — НЕ применяет их сразу. ' +
-      'После вызова покажи пользователю список изменений "было → стало" и спроси подтверждение обычным текстом ' +
-      '(например: "Применить? Напиши да или нет"). Изменения применяются отдельным шагом вне тебя, когда пользователь ' +
-      'ответит "да" следующим сообщением — не утверждай, что они уже применены. Передавай только те поля, которые ' +
-      'нужно изменить; остальные останутся как есть.',
+      'Подготовить изменение СУЩЕСТВУЮЩЕГО товара — ЛЮБОГО поля карточки (не создание нового). ' +
+      'Находит товар по названию или id, сравнивает с переданными полями и сохраняет черновик изменений — ' +
+      'НЕ применяет их сразу. После вызова покажи пользователю список изменений "было → стало" (и warning, если ' +
+      'он есть в ответе) и спроси подтверждение обычным текстом (например: "Применить? Напиши да или нет"). ' +
+      'Изменения применяются отдельным шагом вне тебя, когда пользователь ответит "да" следующим сообщением — ' +
+      'не утверждай, что они уже применены. Передавай только те поля, которые нужно изменить; остальные ' +
+      'останутся как есть.\n' +
+      'ВАЖНО про composition/suppliers/pricing — это ПОЛНАЯ замена массива, не добавление одного элемента. ' +
+      'Если пользователь просит добавить/убрать/поменять один элемент — сначала посмотри текущий список через ' +
+      'get_products и пришли сюда весь итоговый массив целиком (иначе остальные элементы потеряются).\n' +
+      'ВАЖНО про description — отдельного поля "описание" в базе нет: это первая строка состава ' +
+      '(composition[0]). Используй description, только если меняешь именно её, не трогая остальной состав; ' +
+      'если нужно переписать весь состав — используй composition. Никогда не передавай оба сразу.',
     input_schema: {
       type: 'object',
       properties: {
-        product_query: { type: 'string',  description: 'Название товара (или его часть) либо id — для поиска' },
-        title:         { type: 'string',  description: 'Новое название' },
-        price:         { type: 'number',  description: 'Новая цена в рублях' },
-        weight:        { type: 'string',  description: 'Новый вес/объём' },
-        category:      { type: 'string',  description: 'Новая категория: vegetables, fruits, greens, bundles' },
-        sort_order:    { type: 'number',  description: 'Новый порядок сортировки' },
-        is_active:     { type: 'boolean', description: 'Показывать товар в приложении' },
-        in_stock:      { type: 'boolean', description: 'Есть в наличии' },
-        badge_type:    { type: 'string',  description: 'Новая метка: hit, eco, new, popular, deal — или "none", чтобы убрать метку' },
-        badge_label:   { type: 'string',  description: 'Текст метки (если не задан — берётся стандартный по типу)' },
-        badge_color:   { type: 'string',  description: 'Цвет метки в hex, опционально' },
+        product_query:  { type: 'string',  description: 'Название товара (или его часть) либо id — для поиска' },
+        title:          { type: 'string',  description: 'Новое название' },
+        price:          { type: 'number',  description: 'Новая цена в рублях' },
+        weight:         { type: 'string',  description: 'Новый вес/объём' },
+        category:       { type: 'string',  description: 'Новая категория — id из списка существующих категорий магазина (уточни через get_products/каталог, если не уверен)' },
+        subcategory:    { type: 'string',  description: 'Название подкатегории из существующих для этой категории — или "none", чтобы убрать подкатегорию' },
+        sort_order:     { type: 'number',  description: 'Новый порядок сортировки' },
+        is_active:      { type: 'boolean', description: 'Показывать товар в приложении' },
+        in_stock:       { type: 'boolean', description: 'Есть в наличии' },
+        is_bundle:      { type: 'boolean', description: 'Набор с кастомизируемым составом (влияет на логику чекаута; сами позиции состава набора редактируются отдельно в админке, не этим инструментом)' },
+        badge_type:     { type: 'string',  description: 'Новая метка: hit, eco, new, popular, deal — или "none", чтобы убрать метку' },
+        badge_label:    { type: 'string',  description: 'Текст метки (если не задан — берётся стандартный по типу)' },
+        badge_color:    { type: 'string',  description: 'Цвет метки в hex, опционально' },
+        emoji:          { type: 'string',  description: 'Эмодзи-иконка карточки товара' },
+        bg:             { type: 'string',  description: 'Фон карточки: CSS-цвет или градиент' },
+        image_url:      { type: 'string',  description: 'Прямая ссылка на фото товара (http/https). Пустая строка — убрать фото. НЕ выдумывай ссылку, если пользователь её не давал.' },
+        home_image_url: { type: 'string',  description: 'Прямая ссылка на фото для блока "Готовые наборы" на Главной. Пустая строка — убрать. НЕ выдумывай ссылку.' },
+        description:    { type: 'string',  description: 'Описание товара — правит только первую строку состава (composition[0]), остальной состав не трогает. Не использовать вместе с composition.' },
+        composition: {
+          type: 'array',
+          description: 'ПОЛНЫЙ новый состав товара ("что внутри"), заменяет текущий целиком. Не использовать вместе с description.',
+          items: {
+            type: 'object',
+            properties: {
+              name:   { type: 'string', description: 'Название ингредиента/позиции' },
+              amount: { type: 'string', description: 'Количество, например "0.5 кг" — можно оставить пустым' },
+            },
+            required: ['name'],
+          },
+        },
+        suppliers: {
+          type: 'array',
+          description: 'ПОЛНЫЙ новый список поставщиков, заменяет текущий целиком.',
+          items: {
+            type: 'object',
+            properties: {
+              emoji:    { type: 'string' },
+              name:     { type: 'string' },
+              region:   { type: 'string' },
+              note:     { type: 'string' },
+              imageUrl: { type: 'string', description: 'Ссылка на фото поставщика — переноси существующую (см. get_products), не выдумывай новую' },
+            },
+            required: ['name'],
+          },
+        },
+        pricing: {
+          type: 'array',
+          description: 'ПОЛНАЯ новая разбивка цены "из чего складывается цена", заменяет текущую целиком. Сумма pct обычно должна быть 100.',
+          items: {
+            type: 'object',
+            properties: {
+              label:  { type: 'string' },
+              sub:    { type: 'string' },
+              pct:    { type: 'number' },
+              amount: { type: 'number' },
+              color:  { type: 'string' },
+            },
+            required: ['label', 'pct', 'amount'],
+          },
+        },
+        nutrition: {
+          type: 'object',
+          description: 'Пищевая ценность на 100 г — передавай все 4 поля разом.',
+          properties: {
+            calories: { type: 'number' },
+            protein:  { type: 'number' },
+            fat:      { type: 'number' },
+            carbs:    { type: 'number' },
+          },
+        },
       },
       required: ['product_query'],
     },
@@ -380,7 +566,11 @@ async function executeTool(name, input, chatId) {
       return apiRequest('/api/admin/products');
 
     case 'propose_product_update': {
-      const products = await apiRequest('/api/admin/products');
+      const [products, categories, subcategories] = await Promise.all([
+        apiRequest('/api/admin/products'),
+        apiRequest('/api/admin/categories'),
+        apiRequest('/api/admin/subcategories'),
+      ]);
       if (!Array.isArray(products)) return { error: 'Не удалось получить список товаров' };
 
       const q = (input.product_query || '').trim().toLowerCase();
@@ -392,9 +582,63 @@ async function executeTool(name, input, chatId) {
       if (matches.length > 1) {
         return { error: 'ambiguous', matches: matches.map(p => ({ id: p.id, title: p.title })) };
       }
-
       const cur = matches[0];
-      const { payload, diff } = buildProductUpdate(input, cur);
+
+      // Категория — сверяем с живым списком: у неё FK на categories(id),
+      // несуществующее значение уронит PUT с невнятной 500-й ошибкой.
+      if (input.category !== undefined && Array.isArray(categories)) {
+        const validIds = categories.map(c => c.id);
+        if (!validIds.includes(input.category)) {
+          return { error: 'invalid_category', category: input.category, valid_categories: validIds };
+        }
+      }
+
+      // Подкатегория — по названию, должна принадлежать итоговой категории
+      // товара (как и в админке); "none"/пусто — явный сброс.
+      let subcategoryResolution;
+      const targetCategory = input.category !== undefined ? input.category : cur.category;
+      if (input.subcategory !== undefined) {
+        const sq = input.subcategory.trim().toLowerCase();
+        if (!sq || sq === 'none') {
+          subcategoryResolution = { id: null, name: null };
+        } else if (Array.isArray(subcategories)) {
+          const scMatches = subcategories.filter(
+            sc => sc.categoryId === targetCategory && sc.name.toLowerCase().includes(sq)
+          );
+          if (scMatches.length === 0) {
+            return { error: 'subcategory_not_found', subcategory: input.subcategory, category: targetCategory };
+          }
+          if (scMatches.length > 1) {
+            return { error: 'subcategory_ambiguous', matches: scMatches.map(sc => sc.name) };
+          }
+          subcategoryResolution = { id: scMatches[0].id, name: scMatches[0].name };
+        }
+      } else if (input.category !== undefined && input.category !== cur.category && cur.subcategoryId != null) {
+        // Категория меняется, подкатегорию явно не указали — сбрасываем,
+        // как это делает сама админка (иначе останется несовместимая пара).
+        subcategoryResolution = { id: null, name: null };
+      }
+
+      // is_bundle — предупреждаем, если включают набор без единой позиции
+      // кастомизируемого состава (она живёт в отдельной таблице и этим
+      // инструментом не заполняется — покупатель увидит пустой блок).
+      let bundleWarning = null;
+      if (input.is_bundle === true && cur.isBundle !== true) {
+        try {
+          const items = await apiRequest(`/api/admin/products/${encodeURIComponent(cur.id)}/composition`);
+          if (Array.isArray(items) && items.length === 0) {
+            bundleWarning =
+              'у товара пока нет позиций кастомизируемого состава — покупатель увидит пустой блок ' +
+              '"настройте состав", пока их не добавят отдельно в админке.';
+          }
+        } catch { /* необязательная проверка, не блокируем предложение из-за её сбоя */ }
+      }
+
+      const subcategoriesById = Object.fromEntries(
+        (Array.isArray(subcategories) ? subcategories : []).map(sc => [sc.id, sc.name])
+      );
+
+      const { payload, diff } = buildProductUpdate(input, cur, { subcategoryResolution, subcategoriesById });
       if (diff.length === 0) return { error: 'no_changes', product: cur.title };
 
       pendingChanges.set(chatId, {
@@ -409,7 +653,8 @@ async function executeTool(name, input, chatId) {
         product: cur.title,
         id: cur.id,
         changes: diff.map(d => `${d.label}: ${d.from} → ${d.to}`),
-        note: 'Черновик сохранён, изменения ещё НЕ применены. Покажи список изменений пользователю и спроси подтверждение.',
+        warning: bundleWarning,
+        note: 'Черновик сохранён, изменения ещё НЕ применены. Покажи список изменений (и warning, если он есть) пользователю и спроси подтверждение.',
       };
     }
 
@@ -529,7 +774,7 @@ async function handleUpdate(update) {
         await sendMessage(chatId, 'Черновик изменения устарел (прошло больше 5 минут). Сформулируй правку заново.');
         return;
       }
-      const result = await apiRequest(`/api/admin/products/${pending.productId}`, 'PUT', pending.payload);
+      const result = await apiRequest(`/api/admin/products/${encodeURIComponent(pending.productId)}`, 'PUT', pending.payload);
       if (result?.error) {
         await sendMessage(chatId, `Не удалось применить изменения: ${result.error}`);
       } else {
@@ -604,14 +849,23 @@ async function handleUpdate(update) {
         'Цену продажи, категорию, подкатегорию и разбивку цены система посчитает сама — ' +
         'передавать их не нужно. ' +
         'После создания покажи пользователю список добавленных товаров с финальными ценами.\n\n' +
-        'Чтобы изменить СУЩЕСТВУЮЩИЙ товар (цену, вес, категорию, метку, наличие, активность, ' +
-        'порядок сортировки, название) — используй ТОЛЬКО propose_product_update, никогда create_product ' +
-        'для этого. Этот инструмент только готовит черновик и ничего не применяет. После вызова покажи ' +
-        'пользователю список изменений "было → стало" и спроси подтверждение обычным текстом, например: ' +
-        '"Применить эти изменения? Напиши да или нет". НЕ утверждай, что изменения уже применены — их ' +
-        'применит отдельный шаг после того, как пользователь ответит "да" следующим сообщением. ' +
-        'Если товар не найден или найдено несколько подходящих — сообщи об этом и уточни у пользователя, ' +
-        'какой товар он имеет в виду.',
+        'Чтобы изменить СУЩЕСТВУЮЩИЙ товар — ЛЮБОЕ поле его карточки (цена, вес, категория, подкатегория, ' +
+        'метка, наличие, активность, порядок сортировки, название, эмодзи, фон карточки, фото, описание/состав, ' +
+        'поставщики, разбивка цены, пищевая ценность, признак "набор") — используй ТОЛЬКО propose_product_update, ' +
+        'никогда create_product для этого. Этот инструмент только готовит черновик и ничего не применяет. ' +
+        'После вызова покажи пользователю список изменений "было → стало" (и текст из поля warning, если оно ' +
+        'непустое) и спроси подтверждение обычным текстом, например: "Применить эти изменения? Напиши да или нет". ' +
+        'НЕ утверждай, что изменения уже применены — их применит отдельный шаг после того, как пользователь ' +
+        'ответит "да" следующим сообщением.\n' +
+        'Если пользователь просит изменить только один элемент внутри composition/suppliers/pricing (например ' +
+        '"добавь укроп в состав" или "добавь ещё поставщика"), сначала вызови get_products, чтобы увидеть текущий ' +
+        'полный массив, и передай в propose_product_update весь итоговый список целиком — эти поля заменяются ' +
+        'полностью, а не дополняются.\n' +
+        'Если propose_product_update вернул error:\n' +
+        '- "not_found" или "ambiguous" — сообщи и уточни у пользователя, какой товар он имеет в виду;\n' +
+        '- "no_changes" — скажи, что все переданные значения совпадают с текущими, менять нечего;\n' +
+        '- "invalid_category" — сообщи, что такой категории нет, и перечисли valid_categories из ответа;\n' +
+        '- "subcategory_not_found" или "subcategory_ambiguous" — сообщи и уточни точное название подкатегории.',
       tools,
       messages,
     });
