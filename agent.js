@@ -190,6 +190,7 @@ function buildProductBody({ name, price, category, weight, description, ingredie
 const pendingChanges = new Map();
 
 const FIELD_LABELS = {
+  slug:          'Слаг',
   title:         'Название',
   price:         'Цена',
   weight:        'Вес/объём',
@@ -265,6 +266,7 @@ function buildProductUpdate(input, cur, extra = {}) {
     diff.push({ field: dtoKey, label: FIELD_LABELS[dtoKey] || dtoKey, from: formatValue(dtoKey, cur[dtoKey]), to: formatValue(dtoKey, newVal) });
   };
 
+  setField('slug', input.slug);
   setField('title', input.title);
   setField('price', input.price);
   setField('weight', input.weight);
@@ -419,6 +421,7 @@ const tools = [
       type: 'object',
       properties: {
         product_query:  { type: 'string',  description: 'Название товара (или его часть) либо id — для поиска' },
+        slug:           { type: 'string',  description: 'Новый слаг — человекочитаемый идентификатор в админке, в отличие от внутреннего id можно менять в любой момент. Латиницей, через дефис.' },
         title:          { type: 'string',  description: 'Новое название' },
         price:          { type: 'number',  description: 'Новая цена в рублях' },
         weight:         { type: 'string',  description: 'Новый вес/объём' },
@@ -583,6 +586,13 @@ async function executeTool(name, input, chatId) {
         return { error: 'ambiguous', matches: matches.map(p => ({ id: p.id, title: p.title })) };
       }
       const cur = matches[0];
+
+      // Слаг — проверяем уникальность заранее (у него UNIQUE-индекс в БД),
+      // чтобы не узнавать о конфликте только после подтверждения "да".
+      if (input.slug !== undefined && input.slug !== cur.slug) {
+        const slugTaken = products.some(p => p.id !== cur.id && p.slug === input.slug);
+        if (slugTaken) return { error: 'slug_taken', slug: input.slug };
+      }
 
       // Категория — сверяем с живым списком: у неё FK на categories(id),
       // несуществующее значение уронит PUT с невнятной 500-й ошибкой.
@@ -849,10 +859,12 @@ async function handleUpdate(update) {
         'Цену продажи, категорию, подкатегорию и разбивку цены система посчитает сама — ' +
         'передавать их не нужно. ' +
         'После создания покажи пользователю список добавленных товаров с финальными ценами.\n\n' +
-        'Чтобы изменить СУЩЕСТВУЮЩИЙ товар — ЛЮБОЕ поле его карточки (цена, вес, категория, подкатегория, ' +
+        'Чтобы изменить СУЩЕСТВУЮЩИЙ товар — ЛЮБОЕ поле его карточки (слаг, цена, вес, категория, подкатегория, ' +
         'метка, наличие, активность, порядок сортировки, название, эмодзи, фон карточки, фото, описание/состав, ' +
         'поставщики, разбивка цены, пищевая ценность, признак "набор") — используй ТОЛЬКО propose_product_update, ' +
-        'никогда create_product для этого. Этот инструмент только готовит черновик и ничего не применяет. ' +
+        'никогда create_product для этого. Слаг (slug) — человекочитаемый идентификатор, который можно свободно ' +
+        'переименовывать; внутренний id товара при этом не меняется и не должен упоминаться как то, что правится. ' +
+        'Этот инструмент только готовит черновик и ничего не применяет. ' +
         'После вызова покажи пользователю список изменений "было → стало" (и текст из поля warning, если оно ' +
         'непустое) и спроси подтверждение обычным текстом, например: "Применить эти изменения? Напиши да или нет". ' +
         'НЕ утверждай, что изменения уже применены — их применит отдельный шаг после того, как пользователь ' +
@@ -865,7 +877,8 @@ async function handleUpdate(update) {
         '- "not_found" или "ambiguous" — сообщи и уточни у пользователя, какой товар он имеет в виду;\n' +
         '- "no_changes" — скажи, что все переданные значения совпадают с текущими, менять нечего;\n' +
         '- "invalid_category" — сообщи, что такой категории нет, и перечисли valid_categories из ответа;\n' +
-        '- "subcategory_not_found" или "subcategory_ambiguous" — сообщи и уточни точное название подкатегории.',
+        '- "subcategory_not_found" или "subcategory_ambiguous" — сообщи и уточни точное название подкатегории;\n' +
+        '- "slug_taken" — сообщи, что такой слаг уже занят другим товаром, предложи другой вариант.',
       tools,
       messages,
     });
