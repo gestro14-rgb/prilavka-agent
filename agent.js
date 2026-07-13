@@ -7,6 +7,7 @@ const ADMIN_API_URL   = process.env.ADMIN_API_URL;
 const ADMIN_JWT_TOKEN = process.env.ADMIN_JWT_TOKEN;
 const ALLOWED_USER_ID = 686803005;
 const MINI_APP_URL    = process.env.MINI_APP_URL || 'https://prilavka-app-production.up.railway.app';
+const PENDING_TTL_MS  = 5 * 60 * 1000; // черновик правки товара живёт 5 минут
 
 const START_MESSAGE = `Привет! 👋 Я Михаил, делаю доставку свежих овощей и фруктов на юго-запад Москвы.
 
@@ -138,7 +139,7 @@ const CATEGORY_BG     = {
   greens:     'var(--color-accent-soft)',
   fruits:     '#FFF0E0',
 };
-const BADGE_LABELS    = { hit: 'Хит', eco: 'Эко', new: 'Новинка', popular: 'Популярное' };
+const BADGE_LABELS    = { hit: 'Хит', eco: 'Эко', new: 'Новинка', popular: 'Популярное', deal: 'Выгодно' };
 
 // ── Subcategory id cache (slug → id), loaded once at startup ─────────────────
 
@@ -184,6 +185,67 @@ function buildProductBody({ name, price, category, weight, description, ingredie
   };
 }
 
+// ── Pending product-update drafts (chatId → draft), confirmed via plain "да"/"нет" ──
+
+const pendingChanges = new Map();
+
+const FIELD_LABELS = {
+  title:     'Название',
+  price:     'Цена',
+  weight:    'Вес/объём',
+  category:  'Категория',
+  sortOrder: 'Порядок сортировки',
+  isActive:  'Показывать в приложении',
+  inStock:   'В наличии',
+  badge:     'Метка',
+};
+
+function formatValue(field, value) {
+  if (field === 'badge') {
+    if (!value) return 'нет';
+    const label = BADGE_LABELS[value.type] || value.type;
+    return value.label && value.label !== label ? `${label} ("${value.label}")` : label;
+  }
+  if (field === 'isActive' || field === 'inStock') return value ? 'да' : 'нет';
+  if (value === null || value === undefined || value === '') return '—';
+  return String(value);
+}
+
+// Сравнивает запрошенные изменения с текущим товаром (DTO из GET /api/admin/products)
+// и строит {payload, diff}: payload — только реально изменившиеся поля (для PUT,
+// который сам умеет частичные обновления), diff — человекочитаемый список
+// "было → стало" для показа пользователю перед подтверждением.
+function buildProductUpdate(input, cur) {
+  const payload = {};
+  const diff = [];
+
+  const setField = (dtoKey, newVal) => {
+    if (newVal === undefined || newVal === cur[dtoKey]) return;
+    payload[dtoKey] = newVal;
+    diff.push({ field: dtoKey, label: FIELD_LABELS[dtoKey] || dtoKey, from: formatValue(dtoKey, cur[dtoKey]), to: formatValue(dtoKey, newVal) });
+  };
+
+  setField('title', input.title);
+  setField('price', input.price);
+  setField('weight', input.weight);
+  setField('category', input.category);
+  setField('sortOrder', input.sort_order);
+  setField('isActive', input.is_active);
+  setField('inStock', input.in_stock);
+
+  if (input.badge_type !== undefined) {
+    const newBadge = !input.badge_type || input.badge_type === 'none'
+      ? null
+      : { type: input.badge_type, label: input.badge_label || BADGE_LABELS[input.badge_type] || input.badge_type, color: input.badge_color || null };
+    if (JSON.stringify(newBadge) !== JSON.stringify(cur.badge || null)) {
+      payload.badge = newBadge;
+      diff.push({ field: 'badge', label: 'Метка', from: formatValue('badge', cur.badge), to: formatValue('badge', newBadge) });
+    }
+  }
+
+  return { payload, diff };
+}
+
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 const tools = [
@@ -216,6 +278,33 @@ const tools = [
     name: 'get_products',
     description: 'Получить список всех товаров магазина.',
     input_schema: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'propose_product_update',
+    description:
+      'Подготовить изменение СУЩЕСТВУЮЩЕГО товара (не создание нового). Находит товар по названию или id, ' +
+      'сравнивает с переданными полями и сохраняет черновик изменений — НЕ применяет их сразу. ' +
+      'После вызова покажи пользователю список изменений "было → стало" и спроси подтверждение обычным текстом ' +
+      '(например: "Применить? Напиши да или нет"). Изменения применяются отдельным шагом вне тебя, когда пользователь ' +
+      'ответит "да" следующим сообщением — не утверждай, что они уже применены. Передавай только те поля, которые ' +
+      'нужно изменить; остальные останутся как есть.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        product_query: { type: 'string',  description: 'Название товара (или его часть) либо id — для поиска' },
+        title:         { type: 'string',  description: 'Новое название' },
+        price:         { type: 'number',  description: 'Новая цена в рублях' },
+        weight:        { type: 'string',  description: 'Новый вес/объём' },
+        category:      { type: 'string',  description: 'Новая категория: vegetables, fruits, greens, bundles' },
+        sort_order:    { type: 'number',  description: 'Новый порядок сортировки' },
+        is_active:     { type: 'boolean', description: 'Показывать товар в приложении' },
+        in_stock:      { type: 'boolean', description: 'Есть в наличии' },
+        badge_type:    { type: 'string',  description: 'Новая метка: hit, eco, new, popular, deal — или "none", чтобы убрать метку' },
+        badge_label:   { type: 'string',  description: 'Текст метки (если не задан — берётся стандартный по типу)' },
+        badge_color:   { type: 'string',  description: 'Цвет метки в hex, опционально' },
+      },
+      required: ['product_query'],
+    },
   },
   {
     name: 'create_product',
@@ -276,7 +365,7 @@ const tools = [
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
-async function executeTool(name, input) {
+async function executeTool(name, input, chatId) {
   switch (name) {
     case 'get_stats':
       return apiRequest('/api/admin/stats');
@@ -289,6 +378,40 @@ async function executeTool(name, input) {
 
     case 'get_products':
       return apiRequest('/api/admin/products');
+
+    case 'propose_product_update': {
+      const products = await apiRequest('/api/admin/products');
+      if (!Array.isArray(products)) return { error: 'Не удалось получить список товаров' };
+
+      const q = (input.product_query || '').trim().toLowerCase();
+      let matches = products.filter(p => p.id.toLowerCase() === q);
+      if (matches.length === 0) {
+        matches = products.filter(p => p.title.toLowerCase().includes(q));
+      }
+      if (matches.length === 0) return { error: 'not_found', query: input.product_query };
+      if (matches.length > 1) {
+        return { error: 'ambiguous', matches: matches.map(p => ({ id: p.id, title: p.title })) };
+      }
+
+      const cur = matches[0];
+      const { payload, diff } = buildProductUpdate(input, cur);
+      if (diff.length === 0) return { error: 'no_changes', product: cur.title };
+
+      pendingChanges.set(chatId, {
+        productId: cur.id,
+        title:     cur.title,
+        payload,
+        diff,
+        expiresAt: Date.now() + PENDING_TTL_MS,
+      });
+
+      return {
+        product: cur.title,
+        id: cur.id,
+        changes: diff.map(d => `${d.label}: ${d.from} → ${d.to}`),
+        note: 'Черновик сохранён, изменения ещё НЕ применены. Покажи список изменений пользователю и спроси подтверждение.',
+      };
+    }
 
     case 'create_product': {
       const body = buildProductBody({
@@ -390,7 +513,44 @@ async function handleUpdate(update) {
 
   if (msg.from?.id !== ALLOWED_USER_ID) return;
 
-  const chatId       = msg.chat.id;
+  const chatId = msg.chat.id;
+  const text   = msg.text || msg.caption;
+
+  // Подтверждение/отмена черновика правки товара — решается детерминированно,
+  // в коде, а не моделью: между сообщениями нет истории диалога (messages
+  // ниже собирается с нуля на каждый апдейт), поэтому применение изменений
+  // в БД не должно зависеть от того, "помнит" ли модель, что предлагала.
+  const pending = pendingChanges.get(chatId);
+  if (pending && text) {
+    const trimmed = text.trim();
+    if (/^(да|подтверждаю|ок|окей|применить)\.?$/i.test(trimmed)) {
+      pendingChanges.delete(chatId);
+      if (Date.now() > pending.expiresAt) {
+        await sendMessage(chatId, 'Черновик изменения устарел (прошло больше 5 минут). Сформулируй правку заново.');
+        return;
+      }
+      const result = await apiRequest(`/api/admin/products/${pending.productId}`, 'PUT', pending.payload);
+      if (result?.error) {
+        await sendMessage(chatId, `Не удалось применить изменения: ${result.error}`);
+      } else {
+        await sendMessage(
+          chatId,
+          `Готово ✅ Товар «${pending.title}» обновлён:\n` +
+            pending.diff.map(d => `• ${d.label}: ${d.from} → ${d.to}`).join('\n')
+        );
+      }
+      return;
+    }
+    if (/^(нет|отмена|отменить|стоп)\.?$/i.test(trimmed)) {
+      pendingChanges.delete(chatId);
+      await sendMessage(chatId, 'Отменено, изменения не применены.');
+      return;
+    }
+    // Пользователь написал не да/нет, а что-то ещё — черновик больше не
+    // актуален, не заставляем его сначала разбираться со старым предложением.
+    pendingChanges.delete(chatId);
+  }
+
   const contentParts = [];
 
   if (msg.photo) {
@@ -404,7 +564,6 @@ async function handleUpdate(update) {
     }
   }
 
-  const text = msg.text || msg.caption;
   if (text) contentParts.push({ type: 'text', text });
   if (contentParts.length === 0) return;
 
@@ -444,7 +603,15 @@ async function handleUpdate(update) {
         '(например «добавь хит» или «поставь эко»). Не угадывай бейдж самостоятельно. ' +
         'Цену продажи, категорию, подкатегорию и разбивку цены система посчитает сама — ' +
         'передавать их не нужно. ' +
-        'После создания покажи пользователю список добавленных товаров с финальными ценами.',
+        'После создания покажи пользователю список добавленных товаров с финальными ценами.\n\n' +
+        'Чтобы изменить СУЩЕСТВУЮЩИЙ товар (цену, вес, категорию, метку, наличие, активность, ' +
+        'порядок сортировки, название) — используй ТОЛЬКО propose_product_update, никогда create_product ' +
+        'для этого. Этот инструмент только готовит черновик и ничего не применяет. После вызова покажи ' +
+        'пользователю список изменений "было → стало" и спроси подтверждение обычным текстом, например: ' +
+        '"Применить эти изменения? Напиши да или нет". НЕ утверждай, что изменения уже применены — их ' +
+        'применит отдельный шаг после того, как пользователь ответит "да" следующим сообщением. ' +
+        'Если товар не найден или найдено несколько подходящих — сообщи об этом и уточни у пользователя, ' +
+        'какой товар он имеет в виду.',
       tools,
       messages,
     });
@@ -456,7 +623,7 @@ async function handleUpdate(update) {
       if (block.type !== 'tool_use') continue;
       let result;
       try {
-        result = await executeTool(block.name, block.input);
+        result = await executeTool(block.name, block.input, chatId);
       } catch (e) {
         result = { error: String(e) };
       }
