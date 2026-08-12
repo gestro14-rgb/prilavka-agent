@@ -139,7 +139,7 @@ const CATEGORY_BG     = {
   greens:     'var(--color-accent-soft)',
   fruits:     '#FFF0E0',
 };
-const BADGE_LABELS    = { hit: 'Хит', eco: 'Эко', new: 'Новинка', popular: 'Популярное', deal: 'Выгодно' };
+const BADGE_LABELS    = { hit: 'Хит', new: 'Новинка', popular: 'Популярное', deal: 'Выгодно' };
 
 // ── Subcategory id cache (slug → id), loaded once at startup ─────────────────
 
@@ -431,7 +431,7 @@ const tools = [
         is_active:      { type: 'boolean', description: 'Показывать товар в приложении' },
         in_stock:       { type: 'boolean', description: 'Есть в наличии' },
         is_bundle:      { type: 'boolean', description: 'Набор с кастомизируемым составом (влияет на логику чекаута; сами позиции состава набора редактируются отдельно в админке, не этим инструментом)' },
-        badge_type:     { type: 'string',  description: 'Новая метка: hit, eco, new, popular, deal — или "none", чтобы убрать метку' },
+        badge_type:     { type: 'string',  description: 'Новая метка: hit, new, popular, deal — или "none", чтобы убрать метку' },
         badge_label:    { type: 'string',  description: 'Текст метки (если не задан — берётся стандартный по типу)' },
         badge_color:    { type: 'string',  description: 'Цвет метки в hex, опционально' },
         emoji:          { type: 'string',  description: 'Эмодзи-иконка карточки товара' },
@@ -506,7 +506,7 @@ const tools = [
         weight:      { type: 'string',  description: 'Вес/объём: "1 кг", "500 г", "100 г"' },
         description: { type: 'string',  description: 'Описание товара (1-2 предложения)' },
         ingredients: { type: 'string',  description: 'Состав, если применимо' },
-        badge_type:  { type: 'string',  description: 'Бейдж: hit, eco, new, popular — или не передавать' },
+        badge_type:  { type: 'string',  description: 'Бейдж: hit, new, popular — или не передавать' },
         sort_order:  { type: 'number',  description: 'Порядок сортировки' },
         is_active:   { type: 'boolean', description: 'Активен (по умолчанию true)' },
         category:    { type: 'string',  description: 'Переопределить категорию: vegetables, fruits или greens' },
@@ -532,9 +532,9 @@ const tools = [
             properties: {
               name:            { type: 'string', description: 'Название товара' },
               wholesale_price: { type: 'number', description: 'Оптовая цена в рублях (без наценки)' },
-              description:     { type: 'string', description: '1-2 предложения в тёплом тоне эко-бренда' },
+              description:     { type: 'string', description: '1-2 предложения в тёплом, дружелюбном тоне' },
               weight:          { type: 'string', description: 'Вес/объём: "1 кг", "500 г", "100 г"' },
-              badge_type:      { type: 'string', description: 'Бейдж: hit, eco, new, popular — или не передавать' },
+              badge_type:      { type: 'string', description: 'Бейдж: hit, new, popular — или не передавать' },
               ingredients:     { type: 'string', description: 'Состав, если применимо' },
               sort_order:      { type: 'number', description: 'Порядок сортировки' },
             },
@@ -831,7 +831,7 @@ async function handleUpdate(update) {
       max_tokens: 4096,
       thinking:   { type: 'adaptive' },
       system:
-        'Ты помощник администратора интернет-магазина «Прилавка» (доставка эко-продуктов, Москва). ' +
+        'Ты помощник администратора интернет-магазина «Прилавка» (доставка свежих продуктов, Москва). ' +
         'Отвечай кратко и по делу на русском языке. ' +
         'Используй инструменты для получения актуальных данных из системы. ' +
         'Числа форматируй читаемо: пробел как разделитель тысяч, руб. для рублей.\n\n' +
@@ -840,7 +840,7 @@ async function handleUpdate(update) {
         'При вызове create_products_bulk ОБЯЗАТЕЛЬНО передавай поле description для каждого товара — ' +
         '1-2 предложения на русском в тёплом тоне: например «Сочная молодая морковь с грядки. ' +
         'Богата витамином А и природной сладостью.» Без description товар будет без описания в каталоге. ' +
-        'Также подбери реалистичный weight согласно стандартам эко-доставок (Экомаркет, ВкусВилл):\n' +
+        'Также подбери реалистичный weight, ориентируясь на стандартные фасовки для доставки свежих продуктов:\n' +
         'ОВОЩИ: томаты обычные 500-700 г, томаты черри 200-300 г, огурцы 500 г, перец болгарский 500 г, ' +
         'перец острый 100 г, морковь 1 кг, свёкла 1 кг, картофель 1 кг, капуста белокочанная 1 кг, ' +
         'капуста пекинская 500 г, брокколи 400-500 г, цветная капуста 500 г, лук репчатый 1 кг, ' +
@@ -855,7 +855,7 @@ async function handleUpdate(update) {
         'черемша 200 г, кресс-салат 100 г. ' +
         'Если товара нет в списке — ориентируйся на ближайший аналог. Не пиши "1 кг" для всего подряд.\n' +
         'Поле badge_type ВСЕГДА оставляй null если пользователь явно не попросил поставить бейдж ' +
-        '(например «добавь хит» или «поставь эко»). Не угадывай бейдж самостоятельно. ' +
+        '(например «добавь хит» или «поставь выгодно»). Не угадывай бейдж самостоятельно. ' +
         'Цену продажи, категорию, подкатегорию и разбивку цены система посчитает сама — ' +
         'передавать их не нужно. ' +
         'После создания покажи пользователю список добавленных товаров с финальными ценами.\n\n' +
