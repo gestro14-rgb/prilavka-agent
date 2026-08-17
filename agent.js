@@ -9,15 +9,19 @@ const ALLOWED_USER_ID = 686803005;
 const MINI_APP_URL    = process.env.MINI_APP_URL || 'https://prilavka-app-production.up.railway.app';
 const PENDING_TTL_MS  = 5 * 60 * 1000; // черновик правки товара живёт 5 минут
 
-const START_MESSAGE = `Привет! 👋 Я Михаил, делаю доставку свежих овощей и фруктов на юго-запад Москвы.
+// parse_mode: 'HTML' — не MarkdownV2: тот требует экранирования почти
+// дюжины спецсимволов (. ! - и т.д.), а в этом тексте есть и точки, и
+// восклицательный знак. HTML-варианту нужно экранировать только & < >,
+// которых в тексте нет вовсе — see sendMessage вызов в handleUpdate.
+const START_MESSAGE = `<b>Привет! 👋 Я Михаил.
 
-Работаю со своими проверенными поставщиками, лично отбираю лучшее, привожу вечером с 18:00 до 21:00.
+Использую проверенные связи с поставщиками и сам выбираю продукты для ваших заказов.
 
-💳 Оплата при получении — никакой предоплаты
-🌿 Показываю честно, куда уходит каждый рубль
-📍 Работаю по вашему району
+Вы экономите время — я беру покупки на себя.
 
-Жмите кнопку ниже, чтобы посмотреть каталог 👇`;
+💳 Оплата при получении
+
+👇 Нажмите «Прилавка», чтобы выбрать продукты.</b>`;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -742,27 +746,19 @@ async function handleUpdate(update) {
   const msg = update.message;
   if (!msg) return;
 
-  // TEMP DEBUG — убрать после диагностики /start
-  console.log('[UPDATE] от', msg.from?.id, 'text:', JSON.stringify(msg.text));
-
   // /start (в том числе с реферальным диплинком "/start ref_XXXXX") — приветствие
   // с кнопкой Mini App для ЛЮБОГО пользователя, до фильтра по админу.
   if (msg.text === '/start' || msg.text?.startsWith('/start ')) {
-    console.log('[START] Получена команда /start от', msg.from?.id); // TEMP DEBUG
-    try {
-      const result = await tgRequest('sendMessage', {
-        chat_id: msg.chat.id,
-        text: START_MESSAGE,
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '🛒 Открыть Прилавку', web_app: { url: MINI_APP_URL } },
-          ]],
-        },
-      });
-      console.log('[START] Результат отправки:', JSON.stringify(result)); // TEMP DEBUG
-    } catch (e) {
-      console.error('[START] Исключение при отправке:', e); // TEMP DEBUG
-    }
+    await tgRequest('sendMessage', {
+      chat_id: msg.chat.id,
+      text: START_MESSAGE,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: 'Прилавка', web_app: { url: MINI_APP_URL } },
+        ]],
+      },
+    });
     return;
   }
 
